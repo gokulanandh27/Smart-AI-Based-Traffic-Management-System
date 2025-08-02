@@ -1,0 +1,5 @@
+opencv-python==4.5.3.56
+numpy==1.21.2
+torch==1.9.0+cpu    # You can adjust this based on your environment (CPU/GPU)
+flask==2.0.1
+ultralytics
