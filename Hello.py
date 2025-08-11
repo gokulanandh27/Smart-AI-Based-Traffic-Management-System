@@ -1,62 +1,67 @@
-import math
-import os
 import cv2
-import cvzone
 from ultralytics import YOLO
+import supervision as sv
+import numpy as np
 
-# Ensure video file exists
-video_path = 'Videos/video_traffic.mp4'
-if not os.path.exists(video_path):
-    print("Error: Video file not found!")
+VIDEO_PATH = r"C:\Users\hp032\Downloads\Traffic_Management_System_final-main\Traffic_Management_System_final-main\Videos\video_traffic.mp4"
+MODEL_PATH = "yolov8s.pt"
+TARGET_CLASSES = [2, 3, 5, 7]  # car, motorcycle, bus, truck
+
+model = YOLO(MODEL_PATH)
+cap = cv2.VideoCapture(VIDEO_PATH)
+if not cap.isOpened():
+    print(f"[ERROR] Could not open video: {VIDEO_PATH}")
     exit()
 
-cap = cv2.VideoCapture(video_path)
-
-# Ensure template image exists
-mask_path = "template.png"
-if not os.path.exists(mask_path):
-    print("Error: template.png not found!")
+# Step 1: Let user draw ROI
+ret, first_frame = cap.read()
+if not ret:
+    print("[ERROR] Could not read first frame.")
     exit()
 
-mask = cv2.imread(mask_path)
-if mask is None:
-    print("Error: Could not load template.png")
-    exit()
+roi = cv2.selectROI("Select ROI", first_frame, showCrosshair=True)
+cv2.destroyWindow("Select ROI")
 
-model = YOLO('yolov8s.pt')
-className = ['bicycle', 'bus', 'car', 'motorcycle', 'truck']
-print(f"Loaded {len(className)} classes.")
+# Convert ROI to polygon points
+x, y, w, h = roi
+ROI_POINTS = [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]
+
+# Tracker and counting variables
+tracker = sv.ByteTrack()
+counted_ids = set()
+total_count = 0
+mask = np.zeros((first_frame.shape[0], first_frame.shape[1]), dtype=np.uint8)
+cv2.fillPoly(mask, [np.array(ROI_POINTS, dtype=np.int32)], 255)
 
 while True:
-    success, img = cap.read()
-    if not success:
-        print("End of video or error in reading frame.")
-        break  # Exit the loop if video ends
+    ret, frame = cap.read()
+    if not ret:
+        break
 
-    imgRegion = cv2.bitwise_and(img, mask) if mask is not None else img
-    results = model(img, stream=True)
+    results = model(frame, imgsz=640, verbose=False)[0]
+    detections = sv.Detections.from_ultralytics(results)
+    detections = detections[np.isin(detections.class_id, TARGET_CLASSES)]
+    detections = tracker.update_with_detections(detections)
 
-    for r in results:
-        boxes = r.boxes
-        for box in boxes:
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-            w, h = x2 - x1, y2 - y1
-            cvzone.cornerRect(img, (x1, y1, w, h))
+    cv2.polylines(frame, [np.array(ROI_POINTS, dtype=np.int32)], True, (0, 255, 255), 2)
 
-            conf = box.conf[0] if hasattr(box, 'conf') else 0
-            conf = math.ceil(conf * 100) / 100
+    for xyxy, track_id, class_id in zip(detections.xyxy, detections.tracker_id, detections.class_id):
+        x1, y1, x2, y2 = map(int, xyxy)
+        cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
 
-            cls = int(box.cls[0]) if hasattr(box, 'cls') else -1
-            if 0 <= cls < len(className):
-                label = className[cls]
-            else:
-                label = "Unknown"
+        if mask[cy, cx] == 255 and track_id not in counted_ids:
+            counted_ids.add(track_id)
+            total_count += 1
 
-            cvzone.putTextRect(img, f'{label}: {conf}', (max(0, x1), max(0, y1)), thickness=1, scale=0.6, offset=3)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        cv2.putText(frame, f"ID {track_id}", (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
-    cv2.imshow("Image", img)
+    cv2.putText(frame, f"Count: {total_count}", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 3)
+    cv2.imshow("Vehicle Counter", frame)
+
     if cv2.waitKey(1) & 0xFF == ord('q'):
-        break  # Press 'q' to exit
+        break
 
+print(f"[INFO] Final count: {total_count}")
 cap.release()
 cv2.destroyAllWindows()
